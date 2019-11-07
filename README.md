@@ -1,3 +1,9 @@
+# Team Name: 
+Members: 
+Carla Terboven
+Md Hasan Shahriar
+
+
 # Akka tutorial
 
 This repository contains some tutorial and exercise projects for the actor programming toolkit [Akka](https://akka.io/). It is maintained by the [information systems group](https://hpi.de/naumann/home.html) at [HPI](https://hpi.de/) and used in distributed computing classes. The projects are implemented in Java 8 and run distributedly on a computer cluster.
