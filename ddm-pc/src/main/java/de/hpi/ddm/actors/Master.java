@@ -135,24 +135,20 @@ public class Master extends AbstractLoggingActor {
 		}
 
 		String[] line = message.getLines().get(0);
-		//for (String[] line : message.getLines()) {
-			//System.out.println("password: " + line[4]);
+		for (String[] line : message.getLines()) {
 			String[] hints = Arrays.copyOfRange(line, 5, line.length);;
 
-			//for (String hint : hints) {
-				Worker.HintMessage hintMsg = new Worker.HintMessage();
-				hintMsg.setHints(hints);
-				hintMsg.setPasswordLength(Integer.parseInt(line[3]));
-				hintMsg.setPasswordChars(line[2]);
-				hintMsg.setSender(this.self());
+			Worker.HintMessage hintMsg = new Worker.HintMessage();
+			hintMsg.setHints(hints);
+			hintMsg.setPasswordLength(Integer.parseInt(line[3]));
+			hintMsg.setPasswordChars(line[2]);
+			hintMsg.setSender(this.self());
+			hintMsg.setPassword(line[4]);
 
-				router.route(hintMsg, this.self());
-			//}
+			router.route(hintMsg, this.self());
+		}
 
-			//System.out.println(Arrays.toString(line));
-		//}
-		//numPasswords += message.getLines().size();
-		numPasswords++;
+		numPasswords += message.getLines().size();
 
 		this.collector.tell(new Collector.CollectMessage("Processed batch of size " + message.getLines().size()), this.self());
 		this.reader.tell(new Reader.ReadMessage(), this.self());

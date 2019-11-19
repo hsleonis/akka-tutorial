@@ -48,6 +48,7 @@ public class Worker extends AbstractLoggingActor {
 		private String[] hints;
 		private int passwordLength;
 		private String passwordChars;
+		private String password;
 		private ActorRef sender;
 	}
 
@@ -117,13 +118,7 @@ public class Worker extends AbstractLoggingActor {
 	}
 
 	private void handle(HintMessage message) {
-		System.out.println(message.getHints());
-
 		//generate sequences, hash them and compare with hints
-		//all letters that are left -> print all possible strings, hash them, compare with password
-		//return password in password message
-
-		//example: Generating all permutations of an array
 		String allChars = message.getPasswordChars();
 		List<char[]> possibleChars = new LinkedList();
 
@@ -139,53 +134,45 @@ public class Worker extends AbstractLoggingActor {
 			possibleChars.add(arr);
 		}
 
-		System.out.println("num hints: " + message.getHints().length);
-
-		//char[] passwortSet;
+		String passwordSet = "";
 
 		// in the possibleChars array the chars are missing in the order of the passwordChars attribute
 		for(int i = 0; i < possibleChars.size(); i++) {
-		//for(char[] array : possibleChars) {
 			char[] array = possibleChars.get(i);
 			List<String> sequences = new LinkedList<String>();
 			heapPermutation(array, array.length, array.length, sequences);
 			boolean foundHint = encryptHint(message.getHints(), sequences);
 			if(foundHint == false){
-				System.out.println(allChars.charAt(i) + " is missing!");
+				//System.out.println(allChars.charAt(i) + " is missing!");
+				passwordSet += allChars.charAt(i);
 			}
 		}
 
-
-
-		/*
-		//example: Generating all possible strings of length k
-		char[] set = {'a', 'b'};
-		int k = 3;
+		//all letters that are left -> print all possible strings, hash them, compare with password
+		char[] set = passwordSet.toCharArray();
+		int k = message.getPasswordLength();
 		int n = set.length;
-		List<String> l = new LinkedList<String>();
-		printAllKLengthRec(set, "", n, k, l);
-		System.out.println(l);
-		 */
-
-		Master.PasswordMessage msg = new Master.PasswordMessage();
-		msg.setResult(message.getPasswordChars());
-		message.getSender().tell(msg, this.self());
-
+		List<String> possiblePasswords = new LinkedList<String>();
+		possibleKStrings(set, "", n, k, possiblePasswords);
+		System.out.println(possiblePasswords);
+		for (String word : possiblePasswords) {
+			if(hash(word).equals(message.getPassword())){
+				//return password in password message
+				Master.PasswordMessage msg = new Master.PasswordMessage();
+				msg.setResult(word);
+				message.getSender().tell(msg, this.self());
+				return;
+			}
+		}
+		System.out.println("No password found!");
 	}
 
 	private boolean encryptHint(String[] hints, List<String> sequences) {
 		for (String word : sequences) {
 			for (String hint : hints) {
 				if(hash(word).equals(hint)){
-					encryptedHints.add(word);
-					System.out.println(encryptedHints.size() + " -- " + this.self());
+					//System.out.println("Hint: " + word);
 					return true;
-					/* if(encryptedHints.size() == message.getHints().length) {
-						return;
-					}
-					break;
-
-					 */
 				}
 			}
 		}
@@ -237,7 +224,7 @@ public class Worker extends AbstractLoggingActor {
 
 	// Generating all possible strings of length k
 	// https://www.geeksforgeeks.org/print-all-combinations-of-given-length/
-	private void printAllKLengthRec(char[] set, String prefix, int n, int k, List<String> l)
+	private void possibleKStrings(char[] set, String prefix, int n, int k, List<String> l)
 	{
 		// Base case: k is 0, store prefix
 		if (k == 0)
@@ -252,7 +239,7 @@ public class Worker extends AbstractLoggingActor {
 			// Next character of input added
 			String newPrefix = prefix + set[i];
 			// k is decreased, because we have added a new character
-			printAllKLengthRec(set, newPrefix, n, k - 1, l);
+			possibleKStrings(set, newPrefix, n, k - 1, l);
 		}
 	}
 }
