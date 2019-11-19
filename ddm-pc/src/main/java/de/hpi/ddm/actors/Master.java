@@ -134,7 +134,7 @@ public class Master extends AbstractLoggingActor {
 			return;
 		}
 
-		String[] line = message.getLines().get(0);
+		//String[] line = message.getLines().get(0);
 		for (String[] line : message.getLines()) {
 			String[] hints = Arrays.copyOfRange(line, 5, line.length);;
 
