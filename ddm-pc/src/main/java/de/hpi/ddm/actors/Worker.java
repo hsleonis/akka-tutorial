@@ -58,8 +58,7 @@ public class Worker extends AbstractLoggingActor {
 
 	private Member masterSystem;
 	private final Cluster cluster;
-	private LinkedList<String> encryptedHints = new LinkedList();
-	
+
 	/////////////////////
 	// Actor Lifecycle //
 	/////////////////////
@@ -141,7 +140,7 @@ public class Worker extends AbstractLoggingActor {
 			char[] array = possibleChars.get(i);
 			List<String> sequences = new LinkedList<String>();
 			heapPermutation(array, array.length, array.length, sequences);
-			boolean foundHint = encryptHint(message.getHints(), sequences);
+			boolean foundHint = decryptHint(message.getHints(), sequences);
 			if(foundHint == false){
 				//System.out.println(allChars.charAt(i) + " is missing!");
 				passwordSet += allChars.charAt(i);
@@ -168,7 +167,7 @@ public class Worker extends AbstractLoggingActor {
 		System.out.println("No password found!");
 	}
 
-	private boolean encryptHint(String[] hints, List<String> sequences) {
+	private boolean decryptHint(String[] hints, List<String> sequences) {
 		for (String word : sequences) {
 			for (String hint : hints) {
 				if(hash(word).equals(hint)){
