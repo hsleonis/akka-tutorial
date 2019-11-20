@@ -154,9 +154,10 @@ public class Worker extends AbstractLoggingActor {
 		int n = set.length;
 		List<String> possiblePasswords = new LinkedList<String>();
 		possibleKStrings(set, "", n, k, possiblePasswords);
-		System.out.println(possiblePasswords);
 		for (String word : possiblePasswords) {
 			if(hash(word).equals(message.getPassword())){
+				//System.out.println(word);
+
 				//return password in password message
 				Master.PasswordMessage msg = new Master.PasswordMessage();
 				msg.setResult(word);
