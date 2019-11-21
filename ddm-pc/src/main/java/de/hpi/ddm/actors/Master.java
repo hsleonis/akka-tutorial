@@ -85,8 +85,8 @@ public class Master extends AbstractLoggingActor {
 
 	private long startTime;
 	private int passwordLength;
-	private LinkedList<String> passwordChars = new LinkedList<String>();
-	private LinkedList<String> passwords = new LinkedList<String>();
+	private ArrayList<String> passwordChars = new ArrayList<>();
+	private ArrayList<String> passwords = new ArrayList<>();
 	private boolean passwordDecryptionStarted = false;
 
 	/////////////////////
