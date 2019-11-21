@@ -44,17 +44,15 @@ public class Worker extends AbstractLoggingActor {
 	////////////////////
 
 	@Data @NoArgsConstructor @AllArgsConstructor
-	public static class OldMessage implements Serializable {
+	public static class PasswordMessage implements Serializable {
 		private static final long serialVersionUID = 4057807743872319842L;
 		private int passwordLength;
-		//private LinkedList<String> passwordChars;
-		//private LinkedList<String> passwords;
 		private String passwordChars;
 		private String password;
 	}
 
 	@Data @NoArgsConstructor @AllArgsConstructor
-	public static class SeqMessage implements Serializable {
+	public static class HintsMessage implements Serializable {
 		private static final long serialVersionUID = 7647246076267640540L;
 		private String sequence;
 		private HashMap<String, LinkedList<Integer>> hints;
@@ -97,8 +95,8 @@ public class Worker extends AbstractLoggingActor {
 				.match(CurrentClusterState.class, this::handle)
 				.match(MemberUp.class, this::handle)
 				.match(MemberRemoved.class, this::handle)
-				.match(OldMessage.class, this::handle)
-				.match(SeqMessage.class, this::handle)
+				.match(PasswordMessage.class, this::handle)
+				.match(HintsMessage.class, this::handle)
 				.matchAny(object -> this.log().info("Received unknown message: \"{}\"", object.toString()))
 				.build();
 	}
@@ -129,7 +127,7 @@ public class Worker extends AbstractLoggingActor {
 			this.self().tell(PoisonPill.getInstance(), ActorRef.noSender());
 	}
 
-	private void handle(SeqMessage message) {
+	private void handle(HintsMessage message) {
 		this.permutations.clear();
 
 		char[] sequence = message.sequence.toCharArray();
@@ -140,7 +138,7 @@ public class Worker extends AbstractLoggingActor {
 		this.sender().tell(msg, this.self());
 	}
 
-	private void handle(OldMessage message) {
+	private void handle(PasswordMessage message) {
 		//all letters that are left -> generate all possible strings, hash them, compare with password
 		char[] set = message.passwordChars.toCharArray();
 		int k = message.passwordLength;
@@ -149,7 +147,7 @@ public class Worker extends AbstractLoggingActor {
 		possibleKStrings(set, "", n, k, possiblePasswords);
 		if(possiblePasswords.containsKey(message.password)) {
 			//return password in password message
-			Master.PasswordMessage msg = new Master.PasswordMessage();
+			Master.PasswordCompletedMessage msg = new Master.PasswordCompletedMessage();
 			msg.setResult(possiblePasswords.get(message.password));
 			this.sender().tell(msg, this.self());
 			return;

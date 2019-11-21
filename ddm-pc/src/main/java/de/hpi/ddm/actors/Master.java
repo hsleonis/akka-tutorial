@@ -20,11 +20,11 @@ public class Master extends AbstractLoggingActor {
 	
 	public static final String DEFAULT_NAME = "master";
 
-	private final Queue<Worker.SeqMessage> unassignedWork = new LinkedList<>();
-	private final Queue<Worker.OldMessage> unassignedPasswordWork = new LinkedList<>();
+	private final Queue<Worker.HintsMessage> unassignedWork = new LinkedList<>();
+	private final Queue<Worker.PasswordMessage> unassignedPasswordWork = new LinkedList<>();
 	private final Queue<ActorRef> idleWorkers = new LinkedList<>();
-	private final Map<ActorRef, Worker.SeqMessage> busyWorkers = new HashMap<>();
-	private final Map<ActorRef, Worker.OldMessage> busyPasswordWorkers = new HashMap<>();
+	private final Map<ActorRef, Worker.HintsMessage> busyWorkers = new HashMap<>();
+	private final Map<ActorRef, Worker.PasswordMessage> busyPasswordWorkers = new HashMap<>();
 
 	public static Props props(final ActorRef reader, final ActorRef collector) {
 		return Props.create(Master.class, () -> new Master(reader, collector));
@@ -57,7 +57,7 @@ public class Master extends AbstractLoggingActor {
 	}
 
 	@Data @NoArgsConstructor @AllArgsConstructor
-	public static class PasswordMessage implements Serializable {
+	public static class PasswordCompletedMessage implements Serializable {
 		private static final long serialVersionUID = -102767440935270949L;
 		private String result;
 	}
@@ -87,6 +87,7 @@ public class Master extends AbstractLoggingActor {
 	private int passwordLength;
 	private LinkedList<String> passwordChars = new LinkedList<String>();
 	private LinkedList<String> passwords = new LinkedList<String>();
+	private boolean passwordDecryptionStarted = false;
 
 	/////////////////////
 	// Actor Lifecycle //
@@ -108,7 +109,7 @@ public class Master extends AbstractLoggingActor {
 				.match(BatchMessage.class, this::handle)
 				.match(Terminated.class, this::handle)
 				.match(RegistrationMessage.class, this::handle)
-				.match(PasswordMessage.class, this::handle)
+				.match(PasswordCompletedMessage.class, this::handle)
 				.match(HintsCompletedMessage.class, this::handle)
 				.match(PasswordCharMessage.class, this::handle)
 				.matchAny(object -> this.log().info("Received unknown message: \"{}\"", object.toString()))
@@ -121,20 +122,28 @@ public class Master extends AbstractLoggingActor {
 		this.reader.tell(new Reader.ReadMessage(), this.self());
 	}
 
-	protected void handle(PasswordMessage message) {
+	protected void handle(PasswordCompletedMessage message) {
+
 		this.collector.tell(new Collector.CollectMessage(message.getResult()), this.self());
 
 		this.busyPasswordWorkers.remove(this.sender());
 
-		if (this.unassignedPasswordWork.size() != 0) {
+		if (!this.unassignedPasswordWork.isEmpty()) {
 			this.sender().tell(unassignedPasswordWork.element(), this.self());
 			this.busyPasswordWorkers.put(this.sender(), unassignedPasswordWork.remove());
 		}
 		else  {
 			this.idleWorkers.add(this.sender());
-			this.collector.tell(new Collector.PrintMessage(), this.self());
-			this.terminate();
+			if(busyPasswordWorkers.isEmpty() && busyWorkers.isEmpty()) {
+				this.collector.tell(new Collector.PrintMessage(), this.self());
+				this.terminate();
+			}
 		}
+	}
+
+	private void terminationWhenPasswordsAreFasterThanHint() {
+		this.collector.tell(new Collector.PrintMessage(), this.self());
+		this.terminate();
 	}
 
 	protected void handle(HintsCompletedMessage message) {
@@ -149,15 +158,22 @@ public class Master extends AbstractLoggingActor {
 				this.sender().tell(unassignedPasswordWork.element(), this.self());
 				this.busyPasswordWorkers.put(this.sender(), unassignedPasswordWork.remove());
 			}
-			for (int i = 0; i < passwordChars.size(); i++) {
-				Worker.OldMessage msg = new Worker.OldMessage();
-				msg.setPasswordLength(this.passwordLength);
-				msg.setPasswordChars(this.passwordChars.get(i));
-				msg.setPassword(this.passwords.get(i));
-				this.unassignedPasswordWork.add(msg);
+			else if (!this.passwordDecryptionStarted) {
+				this.passwordDecryptionStarted = true;
+				for (int i = 0; i < passwordChars.size(); i++) {
+					Worker.PasswordMessage msg = new Worker.PasswordMessage();
+					msg.setPasswordLength(this.passwordLength);
+					msg.setPasswordChars(this.passwordChars.get(i));
+					msg.setPassword(this.passwords.get(i));
+					this.unassignedPasswordWork.add(msg);
+				}
+				this.sender().tell(unassignedPasswordWork.element(), this.self());
+				this.busyPasswordWorkers.put(this.sender(), unassignedPasswordWork.remove());
 			}
-			this.sender().tell(unassignedPasswordWork.element(), this.self());
-			this.busyPasswordWorkers.put(this.sender(), unassignedPasswordWork.remove());
+			else {
+				this.idleWorkers.add(this.sender());
+				this.terminationWhenPasswordsAreFasterThanHint();
+			}
 		}
 	}
 
@@ -204,7 +220,7 @@ public class Master extends AbstractLoggingActor {
 		for (char c : passwordChars.toCharArray()) {
 			String sequence = passwordChars.replace(Character.toString(c), "");
 
-			Worker.SeqMessage seqMsg = new Worker.SeqMessage();
+			Worker.HintsMessage seqMsg = new Worker.HintsMessage();
 			seqMsg.setSequence(sequence);
 			seqMsg.setMissingChar(c);
 			seqMsg.setHints(hintMap);
@@ -223,13 +239,13 @@ public class Master extends AbstractLoggingActor {
 	}
 	
 	protected void terminate() {
-		this.reader.tell(PoisonPill.getInstance(), ActorRef.noSender());
-		this.collector.tell(PoisonPill.getInstance(), ActorRef.noSender());
-		
 		for (ActorRef worker : this.workers) {
 			this.context().unwatch(worker);
 			worker.tell(PoisonPill.getInstance(), ActorRef.noSender());
 		}
+
+		this.reader.tell(PoisonPill.getInstance(), ActorRef.noSender());
+		this.collector.tell(PoisonPill.getInstance(), ActorRef.noSender());
 		
 		this.self().tell(PoisonPill.getInstance(), ActorRef.noSender());
 		
@@ -243,12 +259,29 @@ public class Master extends AbstractLoggingActor {
 
 		idleWorkers.add(this.sender());
 
-		this.log().info("Registered {}", this.sender());
+		// this.log().info("Registered {}", this.sender());
 	}
 	
 	protected void handle(Terminated message) {
 		this.context().unwatch(message.getActor());
 		this.workers.remove(message.getActor());
+
+		if(this.busyWorkers.containsKey(message.getActor())) {
+			this.unassignedWork.add(this.busyWorkers.get(message.getActor()));
+			this.busyWorkers.remove(message.getActor());
+			if(!idleWorkers.isEmpty()) {
+				this.idleWorkers.element().tell(unassignedWork.element(), this.self());
+				this.busyWorkers.put(this.idleWorkers.remove(), unassignedWork.remove());
+			}
+		}
+		if(this.busyPasswordWorkers.containsKey(message.getActor())) {
+			this.unassignedPasswordWork.add(this.busyPasswordWorkers.get(message.getActor()));
+			this.busyPasswordWorkers.remove(message.getActor());
+			if(!idleWorkers.isEmpty()) {
+				this.idleWorkers.element().tell(unassignedPasswordWork.element(), this.self());
+				this.busyPasswordWorkers.put(this.idleWorkers.element(), unassignedPasswordWork.remove());
+			}
+		}
 
 //		this.log().info("Unregistered {}", message.getActor());
 	}
