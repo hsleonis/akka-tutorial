@@ -1,20 +1,13 @@
 package de.hpi.ddm.actors;
 
 import java.io.Serializable;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.List;
-import java.util.concurrent.TimeUnit;
+import java.util.*;
 
 import akka.actor.AbstractLoggingActor;
 import akka.actor.ActorRef;
 import akka.actor.PoisonPill;
 import akka.actor.Props;
 import akka.actor.Terminated;
-import akka.routing.ActorRefRoutee;
-import akka.routing.RoundRobinRoutingLogic;
-import akka.routing.Routee;
-import akka.routing.Router;
 import lombok.AllArgsConstructor;
 import lombok.Data;
 import lombok.NoArgsConstructor;
@@ -27,7 +20,11 @@ public class Master extends AbstractLoggingActor {
 	
 	public static final String DEFAULT_NAME = "master";
 
-	Router router = new Router(new RoundRobinRoutingLogic());
+	private final Queue<Worker.SeqMessage> unassignedWork = new LinkedList<>();
+	private final Queue<Worker.OldMessage> unassignedPasswordWork = new LinkedList<>();
+	private final Queue<ActorRef> idleWorkers = new LinkedList<>();
+	private final Map<ActorRef, Worker.SeqMessage> busyWorkers = new HashMap<>();
+	private final Map<ActorRef, Worker.OldMessage> busyPasswordWorkers = new HashMap<>();
 
 	public static Props props(final ActorRef reader, final ActorRef collector) {
 		return Props.create(Master.class, () -> new Master(reader, collector));
@@ -37,7 +34,6 @@ public class Master extends AbstractLoggingActor {
 		this.reader = reader;
 		this.collector = collector;
 		this.workers = new ArrayList<>();
-		this.routees = new ArrayList<Routee>();
 	}
 
 	////////////////////
@@ -65,6 +61,19 @@ public class Master extends AbstractLoggingActor {
 		private static final long serialVersionUID = -102767440935270949L;
 		private String result;
 	}
+
+	@Data @NoArgsConstructor @AllArgsConstructor
+	public static class HintsCompletedMessage implements Serializable {
+		private static final long serialVersionUID = 1670208454683295451L;
+		private char missingChar;
+	}
+
+	@Data @NoArgsConstructor @AllArgsConstructor
+	public static class PasswordCharMessage implements Serializable {
+		private static final long serialVersionUID = 3854781765800714665L;
+		private int passwordIndex;
+		private char missingChar;
+	}
 	
 	/////////////////
 	// Actor State //
@@ -74,12 +83,11 @@ public class Master extends AbstractLoggingActor {
 	private final ActorRef collector;
 	private final List<ActorRef> workers;
 
-	private final ArrayList<Routee> routees;
-
 	private long startTime;
-	private int numPasswords;
-	private int numEncryptedPasswords;
-	
+	private int passwordLength;
+	private LinkedList<String> passwordChars = new LinkedList<String>();
+	private LinkedList<String> passwords = new LinkedList<String>();
+
 	/////////////////////
 	// Actor Lifecycle //
 	/////////////////////
@@ -101,6 +109,8 @@ public class Master extends AbstractLoggingActor {
 				.match(Terminated.class, this::handle)
 				.match(RegistrationMessage.class, this::handle)
 				.match(PasswordMessage.class, this::handle)
+				.match(HintsCompletedMessage.class, this::handle)
+				.match(PasswordCharMessage.class, this::handle)
 				.matchAny(object -> this.log().info("Received unknown message: \"{}\"", object.toString()))
 				.build();
 	}
@@ -113,42 +123,100 @@ public class Master extends AbstractLoggingActor {
 
 	protected void handle(PasswordMessage message) {
 		this.collector.tell(new Collector.CollectMessage(message.getResult()), this.self());
-		numEncryptedPasswords++;
-		if(numEncryptedPasswords == numPasswords){
+
+		this.busyPasswordWorkers.remove(this.sender());
+
+		if (this.unassignedPasswordWork.size() != 0) {
+			this.sender().tell(unassignedPasswordWork.element(), this.self());
+			this.busyPasswordWorkers.put(this.sender(), unassignedPasswordWork.remove());
+		}
+		else  {
+			this.idleWorkers.add(this.sender());
 			this.collector.tell(new Collector.PrintMessage(), this.self());
 			this.terminate();
 		}
 	}
-	
+
+	protected void handle(HintsCompletedMessage message) {
+		this.busyWorkers.remove(this.sender());
+
+		if (this.unassignedWork.size() != 0) {
+			this.sender().tell(unassignedWork.element(), this.self());
+			this.busyWorkers.put(this.sender(), unassignedWork.remove());
+		}
+		else  {
+			if(!this.unassignedPasswordWork.isEmpty()) {
+				this.sender().tell(unassignedPasswordWork.element(), this.self());
+				this.busyPasswordWorkers.put(this.sender(), unassignedPasswordWork.remove());
+			}
+			for (int i = 0; i < passwordChars.size(); i++) {
+				Worker.OldMessage msg = new Worker.OldMessage();
+				msg.setPasswordLength(this.passwordLength);
+				msg.setPasswordChars(this.passwordChars.get(i));
+				msg.setPassword(this.passwords.get(i));
+				this.unassignedPasswordWork.add(msg);
+			}
+			this.sender().tell(unassignedPasswordWork.element(), this.self());
+			this.busyPasswordWorkers.put(this.sender(), unassignedPasswordWork.remove());
+		}
+	}
+
+	protected void handle (PasswordCharMessage message) {
+		// remove 1 of index because IDs start at 1 instead of 0
+		int index = message.getPasswordIndex() - 1;
+		this.passwordChars.set(index, this.passwordChars.get(index).replace(String.valueOf(message.getMissingChar()), ""));
+	}
+
 	protected void handle(BatchMessage message) throws InterruptedException {
-		
-		///////////////////////////////////////////////////////////////////////////////////////////////////////
-		// The input file is read in batches for two reasons: /////////////////////////////////////////////////
-		// 1. If we distribute the batches early, we might not need to hold the entire input data in memory. //
-		// 2. If we process the batches early, we can achieve latency hiding. /////////////////////////////////
-		// TODO: Implement the processing of the data for the concrete assignment. ////////////////////////////
-		///////////////////////////////////////////////////////////////////////////////////////////////////////
 
 		if (message.getLines().isEmpty()) {
 			this.collector.tell(new Collector.PrintMessage(), this.self());
 			return;
 		}
 
-		//String[] line = message.getLines().get(0);
+		this.passwordLength = Integer.parseInt(message.lines.get(0)[3]);
+		HashMap<String, LinkedList<Integer>> hintMap = new HashMap<>();
+
 		for (String[] line : message.getLines()) {
-			String[] hints = Arrays.copyOfRange(line, 5, line.length);;
 
-			Worker.HintMessage hintMsg = new Worker.HintMessage();
-			hintMsg.setHints(hints);
-			hintMsg.setPasswordLength(Integer.parseInt(line[3]));
-			hintMsg.setPasswordChars(line[2]);
-			hintMsg.setSender(this.self());
-			hintMsg.setPassword(line[4]);
+			this.passwordChars.add(line[2]);
+			this.passwords.add(line[4]);
 
-			router.route(hintMsg, this.self());
+			String[] hints = Arrays.copyOfRange(line, 5, line.length);
+
+			for (String hint : hints) {
+				if (hintMap.containsKey(hint)) {
+					LinkedList<Integer> values = hintMap.get(hint);
+					values.add(Integer.parseInt(line[0]));
+					hintMap.put(hint, values);
+				} else {
+					LinkedList<Integer> values = new LinkedList<Integer>();
+					values.add(Integer.parseInt(line[0]));
+					hintMap.put(hint, values);
+				}
+			}
 		}
 
-		numPasswords += message.getLines().size();
+		String passwordChars = message.getLines().get(0)[2];
+
+		//we know that the password length is passwordChars.size()-1
+		//we generate possible sequences when removing one char from the possible passwordChars
+		for (char c : passwordChars.toCharArray()) {
+			String sequence = passwordChars.replace(Character.toString(c), "");
+
+			Worker.SeqMessage seqMsg = new Worker.SeqMessage();
+			seqMsg.setSequence(sequence);
+			seqMsg.setMissingChar(c);
+			seqMsg.setHints(hintMap);
+
+			if(this.idleWorkers.size() != 0){
+				this.idleWorkers.element().tell(seqMsg, this.self());
+				this.busyWorkers.put(this.idleWorkers.remove(), seqMsg);
+			}
+			else {
+				this.unassignedWork.add(seqMsg);
+			}
+		}
 
 		this.collector.tell(new Collector.CollectMessage("Processed batch of size " + message.getLines().size()), this.self());
 		this.reader.tell(new Reader.ReadMessage(), this.self());
@@ -173,7 +241,7 @@ public class Master extends AbstractLoggingActor {
 		this.context().watch(this.sender());
 		this.workers.add(this.sender());
 
-		router = router.addRoutee(this.sender());
+		idleWorkers.add(this.sender());
 
 		this.log().info("Registered {}", this.sender());
 	}
@@ -181,8 +249,6 @@ public class Master extends AbstractLoggingActor {
 	protected void handle(Terminated message) {
 		this.context().unwatch(message.getActor());
 		this.workers.remove(message.getActor());
-
-		this.routees.remove(message.getActor());
 
 //		this.log().info("Unregistered {}", message.getActor());
 	}

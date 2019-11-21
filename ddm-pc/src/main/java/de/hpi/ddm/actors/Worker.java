@@ -4,8 +4,9 @@ import java.io.Serializable;
 import java.io.UnsupportedEncodingException;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedList;
-import java.util.List;
 
 import akka.actor.AbstractLoggingActor;
 import akka.actor.ActorRef;
@@ -43,13 +44,21 @@ public class Worker extends AbstractLoggingActor {
 	////////////////////
 
 	@Data @NoArgsConstructor @AllArgsConstructor
-	public static class HintMessage implements Serializable {
+	public static class OldMessage implements Serializable {
 		private static final long serialVersionUID = 4057807743872319842L;
-		private String[] hints;
 		private int passwordLength;
+		//private LinkedList<String> passwordChars;
+		//private LinkedList<String> passwords;
 		private String passwordChars;
 		private String password;
-		private ActorRef sender;
+	}
+
+	@Data @NoArgsConstructor @AllArgsConstructor
+	public static class SeqMessage implements Serializable {
+		private static final long serialVersionUID = 7647246076267640540L;
+		private String sequence;
+		private HashMap<String, LinkedList<Integer>> hints;
+		private char missingChar;
 	}
 
 	/////////////////
@@ -58,6 +67,9 @@ public class Worker extends AbstractLoggingActor {
 
 	private Member masterSystem;
 	private final Cluster cluster;
+
+	private HashSet<String> permutations = new HashSet<String>();
+	private HashMap<String, String> possiblePasswords = new HashMap<String, String>();
 
 	/////////////////////
 	// Actor Lifecycle //
@@ -85,7 +97,8 @@ public class Worker extends AbstractLoggingActor {
 				.match(CurrentClusterState.class, this::handle)
 				.match(MemberUp.class, this::handle)
 				.match(MemberRemoved.class, this::handle)
-				.match(HintMessage.class, this::handle)
+				.match(OldMessage.class, this::handle)
+				.match(SeqMessage.class, this::handle)
 				.matchAny(object -> this.log().info("Received unknown message: \"{}\"", object.toString()))
 				.build();
 	}
@@ -116,67 +129,32 @@ public class Worker extends AbstractLoggingActor {
 			this.self().tell(PoisonPill.getInstance(), ActorRef.noSender());
 	}
 
-	private void handle(HintMessage message) {
-		//generate sequences, hash them and compare with hints
-		String allChars = message.getPasswordChars();
-		List<char[]> possibleChars = new LinkedList();
+	private void handle(SeqMessage message) {
+		this.permutations.clear();
 
-		//int j = 0;
-		for(int j = 0; j < allChars.length(); j++){
-			char[] arr  = new char[allChars.length() - 1];
-			for (int i = 0, k = 0; i < allChars.length(); i++) {
-				if (i == j) {
-					continue;
-				}
-				arr[k++] = allChars.charAt(i);
-			}
-			possibleChars.add(arr);
-		}
+		char[] sequence = message.sequence.toCharArray();
+		heapPermutation(sequence, sequence.length, sequence.length, this.permutations, message.hints, message.missingChar);
 
-		String passwordSet = "";
-
-		// in the possibleChars array the chars are missing in the order of the passwordChars attribute
-		for(int i = 0; i < possibleChars.size(); i++) {
-			char[] array = possibleChars.get(i);
-			List<String> sequences = new LinkedList<String>();
-			heapPermutation(array, array.length, array.length, sequences);
-			boolean foundHint = decryptHint(message.getHints(), sequences);
-			if(foundHint == false){
-				//System.out.println(allChars.charAt(i) + " is missing!");
-				passwordSet += allChars.charAt(i);
-			}
-		}
-
-		//all letters that are left -> print all possible strings, hash them, compare with password
-		char[] set = passwordSet.toCharArray();
-		int k = message.getPasswordLength();
-		int n = set.length;
-		List<String> possiblePasswords = new LinkedList<String>();
-		possibleKStrings(set, "", n, k, possiblePasswords);
-		for (String word : possiblePasswords) {
-			if(hash(word).equals(message.getPassword())){
-				//System.out.println(word);
-
-				//return password in password message
-				Master.PasswordMessage msg = new Master.PasswordMessage();
-				msg.setResult(word);
-				message.getSender().tell(msg, this.self());
-				return;
-			}
-		}
-		System.out.println("No password found!");
+		Master.HintsCompletedMessage msg = new Master.HintsCompletedMessage();
+		msg.setMissingChar(message.missingChar);
+		this.sender().tell(msg, this.self());
 	}
 
-	private boolean decryptHint(String[] hints, List<String> sequences) {
-		for (String word : sequences) {
-			for (String hint : hints) {
-				if(hash(word).equals(hint)){
-					//System.out.println("Hint: " + word);
-					return true;
-				}
-			}
+	private void handle(OldMessage message) {
+		//all letters that are left -> generate all possible strings, hash them, compare with password
+		char[] set = message.passwordChars.toCharArray();
+		int k = message.passwordLength;
+		int n = set.length;
+		this.possiblePasswords.clear();
+		possibleKStrings(set, "", n, k, possiblePasswords);
+		if(possiblePasswords.containsKey(message.password)) {
+			//return password in password message
+			Master.PasswordMessage msg = new Master.PasswordMessage();
+			msg.setResult(possiblePasswords.get(message.password));
+			this.sender().tell(msg, this.self());
+			return;
 		}
-		return false;
+		System.out.println("No password found!");
 	}
 	
 	private String hash(String line) {
@@ -196,15 +174,29 @@ public class Worker extends AbstractLoggingActor {
 	}
 	
 	// Generating all permutations of an array using Heap's Algorithm
+	// the permutations are hashed and compared to the hints
+	// sends a message to the master if a hint is decrypted
 	// https://en.wikipedia.org/wiki/Heap's_algorithm
 	// https://www.geeksforgeeks.org/heaps-algorithm-for-generating-permutations/
-	private void heapPermutation(char[] a, int size, int n, List<String> l) {
+	private void heapPermutation(char[] a, int size, int n, HashSet<String> l, HashMap<String, LinkedList<Integer>> hints, char missingChar) {
 		// If size is 1, store the obtained permutation
-		if (size == 1)
-			l.add(new String(a));
+		if (size == 1){
+			String sequence = hash(String.valueOf(a));
+
+			if(hints.containsKey(sequence)) {
+				LinkedList<Integer> values = hints.get(sequence);
+				for (int index : values) {
+					Master.PasswordCharMessage msg = new Master.PasswordCharMessage();
+					msg.setPasswordIndex(index);
+					msg.setMissingChar(missingChar);
+					this.sender().tell(msg, this.self());
+				}
+			}
+			l.add(sequence);
+		}
 
 		for (int i = 0; i < size; i++) {
-			heapPermutation(a, size - 1, n, l);
+			heapPermutation(a, size - 1, n, l, hints, missingChar);
 
 			// If size is odd, swap first and last element
 			if (size % 2 == 1) {
@@ -223,13 +215,14 @@ public class Worker extends AbstractLoggingActor {
 	}
 
 	// Generating all possible strings of length k
+	// strings are hashed
 	// https://www.geeksforgeeks.org/print-all-combinations-of-given-length/
-	private void possibleKStrings(char[] set, String prefix, int n, int k, List<String> l)
+	private void possibleKStrings(char[] set, String prefix, int n, int k, HashMap<String, String> l)
 	{
 		// Base case: k is 0, store prefix
 		if (k == 0)
 		{
-			l.add(prefix);
+			l.put(hash(prefix), prefix);
 			return;
 		}
 
